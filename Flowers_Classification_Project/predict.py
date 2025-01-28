@@ -1,10 +1,7 @@
-import torch
-print(torch.__version__)
-print(torch.cuda.is_available())# Should return True when GPU is enabled. 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu") #Should return cuda if GPU is enabled 
-print(device)
+#PROGRAMMER: GLORIUS MUSYAWA
 
-import argparse
+# importing libraries that will help in load the model from the checkpoint
+import torch
 from torch import nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
@@ -21,48 +18,75 @@ import numpy as np
 #Other necessary libraries
 import time
 import json
-
+import argparse
 from PIL import Image
 import requests
 import tarfile
 import os
 import shutil
-from IPython.display import display
 
+# Argument parser for CLI options
+parser = argparse.ArgumentParser(description="Image prediction script")
+parser.add_argument('--gpu', action='store_true', help='Use GPU if available for training')
+parser.add_argument('--image-path', type=str, required=True, help="Path to the image to predict")
+parser.add_argument('--cat_json-path', type=str, required=True, help="Path to the cat_to_name json file")
+parser.add_argument('--checkpoint-path',type=str,required = True, help="Path to model's saved checkpoint")
+parser.add_argument('--topk',type = int, default = 5, help = 'Top k predictions of the model')
+args = parser.parse_args()
 
+# Detect if a GPU is available
+if args.gpu and torch.cuda.is_available():
+    device = torch.device("cuda")  # Use GPU
+    print("Using GPU for training")
+else:
+    device = torch.device("cpu")  # Fall back to CPU
+    print("Using CPU for training")
 
-#Defining the classifier network to build from our saved checkpoint
+#rebuilding the structure of my classifier
 class FlowerClassifier(nn.Module):
-    def __init__(self,output_size):
+    def __init__(self,base_model,output_size,in_features,hidden_units):
         super(FlowerClassifier,self).__init__()
-        self.vgg16 = models.vgg16(pretrained = True)
-        self.vgg16.features.requires_grad = False        
-        
+        self.base_model = base_model
+        self.in_features = in_features
+        for param in base_model.features.parameters():
+            param.requires_grad = False
+                   
         self.classifier = nn.Sequential(
-            nn.Linear(25088,4096), #Starting from vgg16's output feature layer
+            nn.Linear(in_features,hidden_units),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(4096,1024),
+            nn.Linear(hidden_units,1024),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(1024,102)
         )
     
     def forward(self,x):
-        x = self.vgg16.features(x)
-        x = x.view(-1,25088)
+        x = self.base_model.features(x)
+        x = x.view(x.size(0), -1)
         x = self.classifier(x)
-        return x 
+        return x   
 
+    
+# Load model checkpoint
 def load_checkpoint(filepath):
     try:
         checkpoint = torch.load(filepath)
         
+        # Extract necessary information from the checkpoint
+        architecture = checkpoint['architecture']
+        in_features = checkpoint['in_features']
+        hidden_units = checkpoint['hidden_units']
+        output_size = checkpoint['output_size']
+
+
+        # Initialize the base model based on architecture (e.g., vgg16, resnet, etc.)
+        base_model = getattr(models, architecture)(pretrained=True)
         # Load the model
-        model = FlowerClassifier(102)
+        model = FlowerClassifier(base_model,output_size,in_features,hidden_units)
         
         # Freeze feature extraction layers
-        for param in model.vgg16.features.parameters():
+        for param in model.parameters():
             param.requires_grad = False
         
         # Replace classifier with the one from the checkpoint
@@ -76,18 +100,21 @@ def load_checkpoint(filepath):
         
         # Move model to device
         model.to(device)
-        
+
         print("Checkpoint loaded successfully.")
         return model
     except Exception as e:
         print(f"Error loading checkpoint: {e}")
         return None
 
-#Loading the flower classifier checkpoint
-model = load_checkpoint('flower_classifier_checkpoint.pth')
+model = load_checkpoint(args.checkpoint_path)
+
+if model is not None:
+    print("Model successfully loaded!.")
 
 
-# Process a PIL image for use in a PyTorch model
+
+# Defining the process_image function to process a PIL image for use in a PyTorch model
 def process_image(image_path):
     ''' Scales, crops, and normalizes a PIL image for a PyTorch model,
         returns an Numpy array
@@ -121,15 +148,12 @@ def process_image(image_path):
     return np_image
 
 
-# To check your work, the function below converts a PyTorch tensor and displays it in the notebook. If your `process_image` function works, running the output through this function should return the original image (except for the cropped out portions).
 
-# In[19]:
-
-
+# Optional : Defining the image visualization function
 def imshow(image, ax=None, title=None):
     """Imshow for Tensor."""
-    #if ax is None:
-        #fig, ax = plt.subplots()
+    if ax is None:
+        fig, ax = plt.subplots()
     
     # PyTorch tensors assume the color channel is the first dimension
     # but matplotlib assumes the color channel is the last dimension
@@ -152,10 +176,9 @@ def imshow(image, ax=None, title=None):
     
     return ax
 
-# In[24]:
 
-
-def predict(image_path, model, topk=5):
+# Defining the predict function 
+def predict(image_path, model, topk):
     print(f"Predicting for image at: {image_path}")
     """Predict the class (or classes) of an image using a trained deep learning model."""
     # Process the image
@@ -187,26 +210,18 @@ def predict(image_path, model, topk=5):
     return top_probs, top_classes
 
 
-# ## Sanity Checking
-# 
-# Now that you can use a trained model for predictions, check to make sure it makes sense. Even if the testing accuracy is high, it's always good to check that there aren't obvious bugs. Use `matplotlib` to plot the probabilities for the top 5 classes as a bar graph, along with the input image.
-# You can convert from the class integer encoding to actual flower names with the `cat_to_name.json` file (should have been loaded earlier in the notebook). To show a PyTorch tensor as an image, use the `imshow` function defined above.
-
-# In[ ]:
+# Defining function to load the category to name mapping json file
 def load_category_names(cat_json):
     with open(cat_json, 'r') as f:
         cat_to_name = json.load(f)
     return cat_to_name
 
 
-# DONE: Display an image along with the top 5 classes
-
-
-def sanity_check(image_path, model, cat_to_name, topk=5):
+# Optional:defining the sanity Check function
+def sanity_check(image_path, model, cat_to_name, topk):
     """Perform a sanity check by displaying the image and prediction probabilities."""
     # Get predictions
     probs, classes = predict(image_path, model, topk)
-    proba = [round(p,4) for p in probs]
     
     # Map class indices to flower names
     flower_names = [cat_to_name[cls] for cls in classes]
@@ -215,10 +230,9 @@ def sanity_check(image_path, model, cat_to_name, topk=5):
     processed_image = process_image(image_path)
     image_tensor = torch.from_numpy(processed_image).type(torch.FloatTensor)
     
-    print(f"Probs: {proba}, Flower names: {flower_names}")
     # Plot the image and bar chart
     fig, (ax1, ax2) = plt.subplots(figsize=(6, 9), nrows=2)
-    ax1 = imshow(image_tensor, ax=ax1)
+    imshow(image_tensor, ax=ax1)
     ax1.set_title(flower_names[0])  # Display the top prediction as the title
     
     # Bar chart for probabilities
@@ -232,34 +246,31 @@ def sanity_check(image_path, model, cat_to_name, topk=5):
     
     plt.tight_layout()
     plt.show()
-    display(fig)
 
 
-# Implementing the parser arguments
 
-parser = argparse.ArgumentParser(description="Image prediction script")
-parser.add_argument('--image-path', type=str, required=True, help="Path to the image to predict")
-parser.add_argument('--cat_json-path', type=str, required=True, help="Path to the cat_to_name json file")
-args = parser.parse_args()
-
-# Now calling the functions to predict
-
+# Getting the image path
 image_path = args.image_path
+
+# Pre-processing the image
 process_image(image_path)
+
+#loading the category to name mapping json file
 cat_to_name = load_category_names(args.cat_json_path)
 
-# Call the predict function directly with the provided image path
-probs,classes = predict(args.image_path,model)
+# Getting the topk user value
+topk = args.topk
+
+# Predicting the results
+probs,classes = predict(args.image_path,model,topk = topk)
 proba = [round(p,3) for p in probs]
 flower_names = [cat_to_name[cls] for cls in classes]
 
+#Printing out the results for the user
 print(f'The predicted result is :\n {flower_names[0]} flower\n {("*" * 50)}')
-print(f'Here are the top 5 predictions of the flower in the image:\n {("*" * 50)}\n {proba}\n {flower_names}')
+print(f'Here are the top {topk} predictions of the flower in the image:\n {("*" * 50)}\n {proba}\n {flower_names}')
 
 # Performing sanity check
 # feel free to perform the sanity check too below by calling it!
 
-#sanity_check(args.image_path, model, cat_to_name, topk=5)
-
-
-
+#sanity_check(args.image_path, model, cat_to_name, topk)
